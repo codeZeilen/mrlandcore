@@ -56,44 +56,44 @@ calcYieldsLPJmL <- function(lpjml = "lpjml5.9.16-m1",
   cropsLPJmL  <- unique(lpj2mag$LPJmL5)
 
   # Combine irrigated and rainfed yields for all crops
-  irYlds <- list()
-  rfYlds <- list()
-  yields <- list()
-  # Read in by crop because of memory issues
-  for (crop in cropsLPJmL) {
-    # irrigated yields in irrigated growing period (in tDM/ha)
-    irYlds[[crop]] <- calcOutput("LPJmLHarmonize",
-                                 subtype = "cropsIR:pft_harvestc",
-                                 subdata = paste("irrigated", crop, sep = "."),
-                                 lpjmlversion = lpjml, climatetype = climatetype,
-                                 years = selectyears, monthly = FALSE,
-                                 aggregate = FALSE)
+  # Note: the full crop set is requested in a single call per irrigation type and
+  #       subset in memory afterwards. Requesting one crop at a time via `subdata`
+  #       turns every crop into its own madrat cache node, and each of those
+  #       re-reads the (all-crop) LPJmL source file just to keep one band.
+  irYlds <- calcOutput("LPJmLHarmonize",
+                       subtype = "cropsIR:pft_harvestc",
+                       lpjmlversion = lpjml, climatetype = climatetype,
+                       years = selectyears, monthly = FALSE,
+                       aggregate = FALSE)[, , paste("irrigated", cropsLPJmL, sep = ".")]
 
-    if (crop == "grassland") {
-      t <- dimSums(calcOutput("LPJmLHarmonize",
-                              subtype = "grass:gpp",
-                              lpjmlversion = lpjml,
-                              climatetype = climatetype,
-                              years = selectyears, monthly = FALSE,
-                              aggregate = FALSE),
-                   dim = 3) * 0.23 # HACKATHON: Document magical number from Jens
-      t <- add_dimension(t, dim = 3.1, add = "irrigation", nm = "rainfed")
-      t <- add_dimension(t, dim = 3.2, add = "crop",       nm = "grassland")
-      rfYlds[[crop]] <- t
-    } else {
-      rfYlds[[crop]] <- calcOutput("LPJmLHarmonize",
-                                   subtype = "cropsRF:pft_harvestc",
-                                   subdata = paste("rainfed", crop, sep = "."),
-                                   lpjmlversion = lpjml, climatetype = climatetype,
-                                   years = selectyears, monthly = FALSE,
-                                   aggregate = FALSE)
-    }
+  # rainfed grassland yields are not taken from pft_harvestc (see below)
+  rfCrops <- setdiff(cropsLPJmL, "grassland")
+  rfYlds  <- calcOutput("LPJmLHarmonize",
+                        subtype = "cropsRF:pft_harvestc",
+                        lpjmlversion = lpjml, climatetype = climatetype,
+                        years = selectyears, monthly = FALSE,
+                        aggregate = FALSE)[, , paste("rainfed", rfCrops, sep = ".")]
 
-    # irrigated and rainfed yields in main growing period (in tDM/ha)
-    yields[[crop]] <- mbind(rfYlds[[crop]], irYlds[[crop]])
+  if ("grassland" %in% cropsLPJmL) {
+    # rainfed grassland yields are derived from grass GPP instead
+    t <- dimSums(calcOutput("LPJmLHarmonize",
+                            subtype = "grass:gpp",
+                            lpjmlversion = lpjml,
+                            climatetype = climatetype,
+                            years = selectyears, monthly = FALSE,
+                            aggregate = FALSE),
+                 dim = 3) * 0.23 # HACKATHON: Document magical number from Jens
+    t <- add_dimension(t, dim = 3.1, add = "irrigation", nm = "rainfed")
+    t <- add_dimension(t, dim = 3.2, add = "crop",       nm = "grassland")
+    rfYlds <- mbind(rfYlds, t)
   }
-  yields <- mbind(yields)
+
+  # irrigated and rainfed yields in main growing period (in tDM/ha)
+  yields <- mbind(rfYlds, irYlds)
   yields <- dimOrder(yields, perm = c(2, 1), dim = 3)
+  # crop-major ordering (crop.rainfed, crop.irrigated, ...)
+  yields <- yields[, , paste(rep(cropsLPJmL, each = 2),
+                             c("rainfed", "irrigated"), sep = ".")]
 
   # For case of multiple cropping, off-season yield needs to be calculated
   if (multicropping) {
